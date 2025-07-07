@@ -1,0 +1,66 @@
+# Resource Categorization Configuration
+# This file allows customization of resource categorization rules without code changes
+
+# Service patterns for categorizing AWS resources
+service_patterns:
+  iam_resources:
+    - "^AWS::IAM::"
+  
+  security_resources:
+    - "^AWS::KMS::"
+    - "^AWS::SecretsManager::"
+    - "^AWS::SecurityHub::"
+    - "^AWS::GuardDuty::"
+    - "^AWS::Config::"
+    - "^AWS::CloudTrail::"
+    - "^AWS::SSM::"  # SSM can contain security parameters
+  
+  compute_resources:
+    - "^AWS::Lambda::"
+    - "^AWS::EC2::Instance"
+    - "^AWS::ECS::"
+    - "^AWS::Batch::"
+  
+  network_resources:
+    - "^AWS::EC2::VPC"
+    - "^AWS::EC2::Subnet"
+    - "^AWS::EC2::SecurityGroup"
+    - "^AWS::EC2::RouteTable"
+    - "^AWS::EC2::NetworkAcl"
+    - "^AWS::ELB::"
+    - "^AWS::ElasticLoadBalancingV2::"
+    - "^AWS::Route53::"
+  
+  storage_resources:
+    - "^AWS::S3::"
+    - "^AWS::EBS::"
+    - "^AWS::EFS::"
+    - "^AWS::DynamoDB::"
+    - "^AWS::RDS::"
+  
+  monitoring_resources:
+    - "^AWS::Logs::"
+    - "^AWS::CloudWatch::"
+    - "^AWS::SNS::"
+    - "^AWS::SQS::"
+  
+  organizations_resources:
+    - "^AWS::Organizations::"
+  
+  custom_resources:
+    - "^Custom::"
+
+# Categories that should be considered security-related
+security_categories:
+  - "iam_resources"
+  - "security_resources"
+
+# Custom resource mappings for specific resources
+# Note: This configuration system is currently not active in the codebase
+# The system uses hardcoded patterns in src/models/diff_models.py instead
+custom_mappings:
+  # Reserved for future use when YAML configuration system is activated
+  
+# Example of how to add new AWS services as they're released:
+# future_services:
+#   "AWS::NewService::Resource": "compute_resources"

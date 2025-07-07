@@ -1,0 +1,2 @@
+[console_scripts]
+lza-analyze = src.cli.simple_main:main

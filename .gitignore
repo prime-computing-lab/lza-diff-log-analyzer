@@ -1,0 +1,10 @@
+.env
+.env.local
+*.key
+*.pem
+config/secrets.yaml
+output/
+test-output/
+test-verification/
+.venv/
+__pycache__/

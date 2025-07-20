@@ -61,3 +61,22 @@ providers:
 #    - 0.1: Very consistent, deterministic
 #    - 0.5: Balanced
 #    - 0.9: More creative, varied responses
+
+# RAG (Retrieval Augmented Generation) Configuration
+rag:
+  enabled: true
+  vector_store:
+    provider: chromadb
+    collection_name: "lza_diff_logs"
+    persist_directory: "./data/chromadb"
+  embedding:
+    model: "all-MiniLM-L6-v2"  # Lightweight, fast model
+    cache_dir: "./data/embeddings_cache"
+  retrieval:
+    max_results: 10
+    similarity_threshold: 0.6
+    chunk_size: 2000
+    chunk_overlap: 400
+  performance:
+    enable_caching: true
+    cache_ttl: 3600  # 1 hour

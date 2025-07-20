@@ -11,6 +11,7 @@ This tool analyzes CloudFormation diff logs generated during AWS Landing Zone Ac
 - **Cloud Administrator Friendly**: Human-readable summaries designed for cloud operations teams
 - **Interactive Q&A Mode**: Ask natural language questions about your LZA changes
 - **Multi-LLM Support**: Works with local models (via Ollama) with cloud API support planned (OpenAI, Anthropic)
+- **RAG-Enhanced Analysis**: Retrieval Augmented Generation for context-aware insights using historical data
 - **Intelligent Risk Analysis**: Automated identification of high-risk changes with business context
 - **LZA-Specific Intelligence**: Recognizes common LZA upgrade patterns and provides relevant guidance
 - **Executive Summaries**: Clear explanations of what changes mean and what actions to take
@@ -31,10 +32,7 @@ git clone <repository-url>
 cd lza-diff-analyzer
 
 # Install project with UV (creates venv automatically)
-uv sync
-
-# For all features (includes LLM and development tools)
-uv sync --extra dev --extra llm
+uv sync --all-extras
 
 # Activate the environment
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
@@ -81,6 +79,12 @@ lza-analyze --input-dir /path/to/diff-logs --generate-reports
 
 # Specify a particular LLM provider
 lza-analyze --input-dir /path/to/diff-logs --llm-provider anthropic
+
+# Enable RAG for enhanced context-aware analysis
+lza-analyze --input-dir /path/to/diff-logs --enable-rag
+
+# Interactive session with RAG capabilities
+lza-analyze --input-dir /path/to/diff-logs --interactive --enable-rag
 ```
 
 ## Sample Output
@@ -240,6 +244,32 @@ export ANTHROPIC_API_KEY="your-anthropic-api-key"
 ```
 
 **Note**: Cloud providers are enabled automatically when API keys are set via environment variables. The configuration file shows them as commented out, but they will be activated when the corresponding environment variables are detected.
+
+### RAG (Retrieval Augmented Generation) Configuration
+
+The tool includes advanced RAG capabilities for enhanced context-aware analysis:
+
+```yaml
+# RAG Configuration (in config/llm_config.yaml)
+rag:
+  enabled: true
+  vector_store:
+    provider: chromadb
+    collection_name: "lza_diff_logs"
+    persist_directory: "./data/chromadb"
+  embedding:
+    model: "all-MiniLM-L6-v2"  # Lightweight, fast model
+    cache_dir: "./data/embeddings_cache"
+  retrieval:
+    max_results: 10
+    similarity_threshold: 0.6
+    chunk_size: 2000
+    chunk_overlap: 400
+  performance:
+    enable_caching: true
+    cache_ttl: 3600  # 1 hour
+```
+
 
 ## License
 

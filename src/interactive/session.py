@@ -4,6 +4,7 @@ Interactive session with RAG-enhanced capabilities
 
 import asyncio
 import sys
+import yaml
 from typing import Dict, Any, Optional, List
 from pathlib import Path
 from rich.console import Console
@@ -13,6 +14,7 @@ from rich.markdown import Markdown
 from ..models.diff_models import ComprehensiveAnalysisResult
 from ..llm.config import ConfigLoader
 from ..llm.base import LLMProviderFactory, LLMMessage
+from ..llm.conversation_manager import ConversationManager, ConversationConfig
 from ..analyzers.iam_semantic_analyzer import IAMSemanticAnalyzer
 from ..prompts.iam_analysis_prompts import IAMAnalysisPrompts
 
@@ -41,13 +43,34 @@ class InteractiveSession:
         self.rag_system = None
         self.rag_enabled = False
         
-        # Conversation memory
+        # Modern conversation management
+        self.conversation_manager = None
+        self._load_conversation_config()
+        
+        # Legacy conversation history (kept for backward compatibility during transition)
         self.conversation_history = []
-        self.max_history_length = 10  # Keep last 10 Q&A pairs
+        self.max_history_length = 10
         
         # Enhanced analysis components
         self.iam_semantic_analyzer = IAMSemanticAnalyzer()
         self.iam_analysis_prompts = IAMAnalysisPrompts()
+    
+    def _load_conversation_config(self):
+        """Load conversation configuration from config file"""
+        try:
+            config_path = ConfigLoader.get_default_config_path()
+            if config_path.exists():
+                with open(config_path, 'r') as f:
+                    raw_config = yaml.safe_load(f) or {}
+            else:
+                raw_config = {}
+            
+            self.conversation_config = ConversationConfig.from_dict(raw_config)
+            
+        except Exception as e:
+            self.console.print(f"[yellow]Warning: Failed to load conversation config: {e}[/yellow]")
+            # Use default configuration
+            self.conversation_config = ConversationConfig()
         
     async def start(self, input_dir: str, analysis_results: Optional[ComprehensiveAnalysisResult] = None):
         """Start the interactive session with RAG-enhanced capabilities"""
@@ -116,15 +139,25 @@ I can help you understand your CloudFormation changes and assess risks.
         self.console.print()
     
     async def _init_llm(self):
-        """Simple LLM initialization"""
+        """Initialize LLM and conversation manager"""
         try:
             default_config = self.llm_config.get_default_config()
             self.llm_provider = LLMProviderFactory.create_provider(default_config)
             
             if self.llm_provider and self.llm_provider.is_available():
                 model_info = f"{default_config.model}"
+                
+                # Initialize conversation manager if enabled
+                if self.conversation_config.enabled:
+                    self.conversation_manager = ConversationManager(
+                        config=self.conversation_config,
+                        llm_config=default_config
+                    )
+                    model_info += " + Memory"
+                
                 if self.rag_enabled:
                     model_info += " + RAG"
+                    
                 self.console.print(f"✅ AI powered by {model_info}")
             else:
                 # Try to get specific error details
@@ -136,8 +169,8 @@ I can help you understand your CloudFormation changes and assess risks.
                 
                 self.console.print(error_message)
                 self.llm_provider = None
-        except Exception:
-            self.console.print("ℹ️ Using rule-based responses (LLM unavailable)")
+        except Exception as e:
+            self.console.print(f"ℹ️ Using rule-based responses (LLM unavailable): {e}")
             self.llm_provider = None
     
     async def _init_rag_system(self):
@@ -375,8 +408,13 @@ I can help you understand your CloudFormation changes and assess risks.
                 elif question.lower() == 'index' and self.rag_enabled:
                     await self._reindex_files()
                     continue
-                elif question.lower() == 'stats' and self.rag_enabled:
-                    self._show_rag_stats()
+                elif question.lower() == 'stats':
+                    if self.rag_enabled:
+                        self._show_rag_stats()
+                    elif self.conversation_manager:
+                        await self._show_conversation_stats()
+                    else:
+                        self.console.print("[yellow]No statistics available (RAG and conversation management disabled)[/yellow]")
                     continue
                 elif question.lower() == 'summary':
                     self._show_summary()
@@ -425,7 +463,7 @@ I can help you understand your CloudFormation changes and assess risks.
         self._display_answer(answer, "Rule-based Assistant")
     
     async def _get_llm_answer(self, question: str) -> Optional[str]:
-        """Get answer from LLM with simplified context and conversation history"""
+        """Get answer from LLM with modern conversation management"""
         if not self.llm_provider:
             return None
         
@@ -456,45 +494,58 @@ IMPORTANT: Maintain consistency with our conversation history. If you previously
 
 Provide clear, actionable advice based ONLY on the provided analysis data and precise file categorizations."""
         
-        # Add conversation context if available
-        if self.conversation_history:
-            context_summary_conv = self._get_conversation_context_summary()
-            if context_summary_conv:
-                system_prompt += f"\n\nConversation Context: {context_summary_conv}"
+        # Create messages with modern conversation manager
+        messages = []
         
-        # Create messages
-        messages = [
-            LLMMessage(
-                role="system",
-                content=system_prompt
-            ),
-            LLMMessage(
-                role="user", 
-                content=f"""Analysis Data: {context_summary}
+        # Add system message
+        system_message = LLMMessage(role="system", content=system_prompt)
+        if self.conversation_manager:
+            await self.conversation_manager.add_message(system_message)
+        
+        # Get conversation context if available
+        if self.conversation_manager:
+            context_messages = await self.conversation_manager.get_conversation_context()
+            messages.extend(context_messages)
+        
+        # Add current user message
+        user_message = LLMMessage(
+            role="user", 
+            content=f"""Analysis Data: {context_summary}
 
 Question: {question}
 
 Please provide a helpful answer based on the analysis data."""
-            )
-        ]
+        )
+        
+        if self.conversation_manager:
+            await self.conversation_manager.add_message(user_message)
+            # Get updated context including the new user message
+            messages = await self.conversation_manager.get_conversation_context()
+        else:
+            # Fallback to simple message list
+            messages = [system_message, user_message]
         
         response = await self.llm_provider.generate(messages)
         answer = response.content if response else None
         
-        # Store in conversation history
-        if answer:
+        # Store assistant response in conversation manager
+        if answer and self.conversation_manager:
+            assistant_message = LLMMessage(role="assistant", content=answer)
+            await self.conversation_manager.add_message(assistant_message)
+        elif answer:
+            # Fallback to legacy conversation history
             self._add_to_conversation_history(question, answer)
             
         return answer
     
     async def _get_rag_enhanced_answer(self, question: str) -> Optional[str]:
-        """Get RAG-enhanced answer using retrieved context and conversation history."""
+        """Get RAG-enhanced answer using retrieved context and modern conversation management."""
         if not self.rag_enabled or not self.llm_provider:
             return None
         
         try:
-            # Enhance query with conversation context
-            enhanced_query = self._enhance_query_with_context(question)
+            # Enhance query with conversation context from conversation manager
+            enhanced_query = await self._enhance_query_with_conversation_context(question)
             
             # Retrieve relevant documents
             docs = self.rag_system.retrieve_context(enhanced_query)
@@ -519,27 +570,46 @@ Please provide a helpful answer based on the analysis data."""
             # Build conversation-aware system prompt
             system_prompt = self._build_enhanced_system_prompt(question)
             
-            # Get LLM response with RAG context and conversation history
-            messages = [
-                LLMMessage(
-                    role="system",
-                    content=system_prompt
-                ),
-                LLMMessage(
-                    role="user", 
-                    content=f"""Retrieved Context: {context_summary}
+            # Create messages with modern conversation manager
+            messages = []
+            
+            # Add system message
+            system_message = LLMMessage(role="system", content=system_prompt)
+            if self.conversation_manager:
+                await self.conversation_manager.add_message(system_message)
+            
+            # Get conversation context if available
+            if self.conversation_manager:
+                context_messages = await self.conversation_manager.get_conversation_context()
+                messages.extend(context_messages)
+            
+            # Add current user message with RAG context
+            user_message = LLMMessage(
+                role="user", 
+                content=f"""Retrieved Context: {context_summary}
 
 Question: {question}
 
 Please answer based on the specific diff content provided above and maintain consistency with our conversation history."""
-                )
-            ]
+            )
+            
+            if self.conversation_manager:
+                await self.conversation_manager.add_message(user_message)
+                # Get updated context including the new user message
+                messages = await self.conversation_manager.get_conversation_context()
+            else:
+                # Fallback to simple message list
+                messages = [system_message, user_message]
             
             response = await self.llm_provider.generate(messages)
             answer = response.content if response else None
             
-            # Store in conversation history
-            if answer:
+            # Store assistant response in conversation manager
+            if answer and self.conversation_manager:
+                assistant_message = LLMMessage(role="assistant", content=answer)
+                await self.conversation_manager.add_message(assistant_message)
+            elif answer:
+                # Fallback to legacy conversation history
                 self._add_to_conversation_history(question, answer)
             
             return answer
@@ -660,6 +730,60 @@ Retrieved Diff Content:
             
         except Exception as e:
             self.console.print(f"[red]Error getting RAG stats: {e}[/red]")
+    
+    async def _show_conversation_stats(self):
+        """Show conversation management statistics."""
+        if not self.conversation_manager:
+            self.console.print("[yellow]Conversation management not enabled[/yellow]")
+            return
+            
+        try:
+            summary = await self.conversation_manager.get_conversation_summary()
+            
+            # Format importance distribution
+            importance_dist = summary.get('importance_distribution', {})
+            importance_text = ", ".join([f"{k}: {v}" for k, v in importance_dist.items()])
+            
+            # Format keyword frequency (top 5)
+            keyword_freq = summary.get('keyword_frequency', {})
+            top_keywords = sorted(keyword_freq.items(), key=lambda x: x[1], reverse=True)[:5]
+            keywords_text = ", ".join([f"{k}({v})" for k, v in top_keywords]) if top_keywords else "None"
+            
+            # Format statistics
+            stats = summary.get('statistics', {})
+            
+            stats_text = f"""
+**Conversation Management Statistics:**
+
+**Memory Usage:**
+- Messages in memory: {summary.get('total_messages', 0)}
+- Total tokens: {summary.get('total_tokens', 0)}
+- Average tokens per message: {summary.get('average_tokens_per_message', 0):.1f}
+- Conversation turns: {summary.get('conversation_turns', 0)}
+
+**Message Analysis:**
+- Importance distribution: {importance_text or 'No messages'}
+- Top keywords: {keywords_text}
+- Retention strategy: {summary.get('retention_strategy', 'Unknown')}
+
+**Performance Metrics:**
+- Compressions performed: {stats.get('compressions_performed', 0)}
+- Truncations performed: {stats.get('truncations_performed', 0)}
+- Important messages preserved: {stats.get('important_messages_preserved', 0)}
+
+**Configuration:**
+- Max history messages: {self.conversation_config.max_history_messages}
+- Max history tokens: {self.conversation_config.max_history_tokens}
+- Token counting enabled: {self.conversation_config.enable_token_counting}
+- Compression enabled: {self.conversation_config.enable_compression}
+            """
+            
+            panel = Panel(Markdown(stats_text), title="Conversation Statistics", border_style="blue")
+            self.console.print(panel)
+            self.console.print()
+            
+        except Exception as e:
+            self.console.print(f"[red]Error getting conversation stats: {e}[/red]")
     
     def _create_simple_context(self, question: str) -> str:
         """Create simplified context summary focused on diff files"""
@@ -1004,8 +1128,39 @@ LZA upgrades are generally safe but require validation:
         
         self._display_answer(summary, "Summary")
     
-    def _enhance_query_with_context(self, question: str) -> str:
-        """Enhance query with conversation context for better retrieval."""
+    async def _enhance_query_with_conversation_context(self, question: str) -> str:
+        """Enhance query with conversation context from ConversationManager for better retrieval."""
+        if self.conversation_manager:
+            # Get conversation summary from conversation manager
+            conversation_summary = await self.conversation_manager.get_conversation_summary()
+            
+            # Extract relevant context from conversation
+            context_parts = []
+            
+            # Add keyword frequency context
+            keyword_freq = conversation_summary.get("keyword_frequency", {})
+            relevant_keywords = []
+            for keyword, freq in keyword_freq.items():
+                if freq > 0 and keyword in ["iam", "dependenciesstack", "security", "risk"]:
+                    relevant_keywords.append(keyword)
+            
+            if relevant_keywords:
+                context_parts.append(f"Previous discussion topics: {', '.join(relevant_keywords)}")
+            
+            # Add recent conversation context (if available)
+            if conversation_summary.get("conversation_turns", 0) > 0:
+                context_parts.append(f"Conversation turn {conversation_summary['conversation_turns']}")
+            
+            if context_parts:
+                context_text = " | ".join(context_parts)
+                enhanced_query = f"{question} [Context: {context_text}]"
+                return enhanced_query
+        
+        # Fallback to legacy method
+        return self._enhance_query_with_context_legacy(question)
+    
+    def _enhance_query_with_context_legacy(self, question: str) -> str:
+        """Legacy enhance query method for backward compatibility."""
         if not self.conversation_history:
             return question
             

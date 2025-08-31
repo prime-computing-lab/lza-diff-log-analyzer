@@ -30,34 +30,57 @@ class OllamaClient(BaseLLMProvider):
         if self.session and not self.session.closed:
             await self.session.close()
     
-    def _format_messages_for_ollama(self, messages: List[LLMMessage]) -> str:
-        """Format messages for Ollama's chat completion format"""
-        formatted = []
-        for msg in messages:
-            if msg.role == "system":
-                formatted.append(f"System: {msg.content}")
-            elif msg.role == "user":
-                formatted.append(f"User: {msg.content}")
-            elif msg.role == "assistant":
-                formatted.append(f"Assistant: {msg.content}")
-        
-        formatted.append("Assistant:")
-        return "\n\n".join(formatted)
+    def _format_messages_for_ollama(self, messages: List[LLMMessage]) -> dict:
+        """Format messages for Ollama's chat completion format using proper message arrays"""
+        # Check if Ollama supports the chat API format
+        if self._supports_chat_format():
+            # Use modern chat completion format with message arrays
+            formatted_messages = []
+            for msg in messages:
+                formatted_messages.append({
+                    "role": msg.role,
+                    "content": msg.content
+                })
+            return {"messages": formatted_messages}
+        else:
+            # Fallback to legacy prompt format for older Ollama versions
+            formatted = []
+            for msg in messages:
+                if msg.role == "system":
+                    formatted.append(f"System: {msg.content}")
+                elif msg.role == "user":
+                    formatted.append(f"User: {msg.content}")
+                elif msg.role == "assistant":
+                    formatted.append(f"Assistant: {msg.content}")
+            
+            formatted.append("Assistant:")
+            return {"prompt": "\n\n".join(formatted)}
+    
+    def _supports_chat_format(self) -> bool:
+        """Check if the current Ollama instance supports chat completion format"""
+        # For now, assume modern Ollama versions support chat format
+        # This could be enhanced to actually check the Ollama version
+        return True
     
     async def generate(self, messages: List[LLMMessage]) -> LLMResponse:
         """Generate a response from Ollama"""
         try:
             session = await self._get_session()
             
-            # Prepare request payload
-            payload = {
+            # Format messages for Ollama
+            formatted_data = self._format_messages_for_ollama(messages)
+            
+            # Prepare request payload with proper endpoint selection
+            base_payload = {
                 "model": self.config.model,
-                "prompt": self._format_messages_for_ollama(messages),
                 "stream": False,
                 "options": {
                     "temperature": self.config.temperature
                 }
             }
+            
+            # Merge formatted data with base payload
+            payload = {**base_payload, **formatted_data}
             
             if self.config.max_tokens:
                 payload["options"]["num_predict"] = self.config.max_tokens
@@ -66,9 +89,12 @@ class OllamaClient(BaseLLMProvider):
             if self.config.additional_params:
                 payload["options"].update(self.config.additional_params)
             
+            # Choose appropriate endpoint based on format
+            endpoint = "/api/chat" if "messages" in formatted_data else "/api/generate"
+            
             # Make request to Ollama
             async with session.post(
-                f"{self.base_url}/api/generate",
+                f"{self.base_url}{endpoint}",
                 json=payload,
                 headers={"Content-Type": "application/json"}
             ) as response:
@@ -82,11 +108,21 @@ class OllamaClient(BaseLLMProvider):
                 
                 result = await response.json()
                 
+                # Handle both chat and generate API responses
+                if "message" in result:
+                    # Chat API response format
+                    content = result["message"].get("content", "")
+                    finish_reason = result.get("done_reason")
+                else:
+                    # Generate API response format
+                    content = result.get("response", "")
+                    finish_reason = result.get("done_reason")
+                
                 return LLMResponse(
-                    content=result.get("response", ""),
+                    content=content,
                     provider=LLMProvider.OLLAMA,
                     model=self.config.model,
-                    finish_reason=result.get("done_reason"),
+                    finish_reason=finish_reason,
                     token_usage={
                         "prompt_tokens": result.get("prompt_eval_count", 0),
                         "completion_tokens": result.get("eval_count", 0),
@@ -94,7 +130,8 @@ class OllamaClient(BaseLLMProvider):
                     },
                     metadata={
                         "eval_duration_ms": result.get("eval_duration", 0) // 1000000,
-                        "total_duration_ms": result.get("total_duration", 0) // 1000000
+                        "total_duration_ms": result.get("total_duration", 0) // 1000000,
+                        "api_format": "chat" if "message" in result else "generate"
                     }
                 )
         
@@ -124,14 +161,20 @@ class OllamaClient(BaseLLMProvider):
         try:
             session = await self._get_session()
             
-            payload = {
+            # Format messages for Ollama
+            formatted_data = self._format_messages_for_ollama(messages)
+            
+            # Prepare request payload
+            base_payload = {
                 "model": self.config.model,
-                "prompt": self._format_messages_for_ollama(messages),
                 "stream": True,
                 "options": {
                     "temperature": self.config.temperature
                 }
             }
+            
+            # Merge formatted data with base payload
+            payload = {**base_payload, **formatted_data}
             
             if self.config.max_tokens:
                 payload["options"]["num_predict"] = self.config.max_tokens
@@ -139,8 +182,11 @@ class OllamaClient(BaseLLMProvider):
             if self.config.additional_params:
                 payload["options"].update(self.config.additional_params)
             
+            # Choose appropriate endpoint based on format
+            endpoint = "/api/chat" if "messages" in formatted_data else "/api/generate"
+            
             async with session.post(
-                f"{self.base_url}/api/generate",
+                f"{self.base_url}{endpoint}",
                 json=payload,
                 headers={"Content-Type": "application/json"}
             ) as response:
@@ -156,8 +202,19 @@ class OllamaClient(BaseLLMProvider):
                     if line:
                         try:
                             data = json.loads(line.decode('utf-8'))
-                            if 'response' in data:
-                                yield data['response']
+                            
+                            # Handle both chat and generate streaming formats
+                            content = None
+                            if 'message' in data and 'content' in data['message']:
+                                # Chat API streaming format
+                                content = data['message']['content']
+                            elif 'response' in data:
+                                # Generate API streaming format
+                                content = data['response']
+                            
+                            if content:
+                                yield content
+                                
                             if data.get('done', False):
                                 break
                         except json.JSONDecodeError:

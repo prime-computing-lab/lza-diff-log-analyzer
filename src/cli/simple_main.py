@@ -220,7 +220,7 @@ async def _start_interactive_session(
 ):
     """Start interactive AI assistant session"""
     from rich.prompt import Confirm
-    from ..interactive.simple_session import SimpleInteractiveSession
+    from ..interactive.session import InteractiveSession
     
     # Simple transition
     console.print("\n" + "=" * 60)
@@ -245,7 +245,7 @@ async def _start_interactive_session(
     if Confirm.ask("🤖 Start AI assistant for detailed exploration?", default=True):
         console.print("\n🚀 Starting AI Assistant...")
         
-        session = SimpleInteractiveSession(console)
+        session = InteractiveSession(console)
         try:
             await session.start(str(input_dir), comprehensive_results)
         except KeyboardInterrupt:

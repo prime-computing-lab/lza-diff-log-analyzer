@@ -80,3 +80,28 @@ rag:
   performance:
     enable_caching: true
     cache_ttl: 3600  # 1 hour
+
+# Conversation Management Configuration (AI Best Practices Aligned)
+conversation:
+  enabled: true
+  max_history_messages: 20          # Admin configurable
+  max_history_tokens: 4000          # Token-based limit
+  retention_strategy: "sliding_window"  # sliding_window, semantic_compression, or fixed
+  compression_threshold: 0.8        # When to compress old messages
+  include_system_messages: false    # Whether to replay system prompts
+  context_preservation:
+    important_keywords: ["iam", "dependenciesstack", "security"]
+    preserve_last_n_important: 5   # Always keep last N important exchanges
+  resource_management:
+    enable_token_counting: true     # Enable actual token counting
+    enable_compression: false       # Enable message compression (requires more resources)
+    lazy_loading: true              # Only load conversation history when needed
+    memory_pooling: true            # Reuse message objects
+  performance:
+    async_processing: true          # Non-blocking conversation state management
+    cache_token_counts: true        # Cache token counts to improve performance
+    compression_cache_size: 100     # Number of compressed messages to cache
+  debugging:
+    log_retention_actions: true     # Log when messages are truncated/compressed
+    conversation_metrics: true      # Track conversation statistics
+    enable_conversation_export: false  # Enable conversation history export
